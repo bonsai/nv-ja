@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# nv-ja — NVIDIA build.nvidia.com（無料クラウド / NVCF）で日本語 STT/TTS を回す薄い CLI
+#
+#   nv-ja asr <audio...> [-o out.txt] [--json] [--lang L] [--func NAME]
+#   nv-ja tts <text|file|-> [-o out.mp3] [--voice V] [--lang L] [--func NAME]
+#   nv-ja models [--all]
+#   nv-ja key
+#
+# ja 対応: ASR=ai-whisper-large-v3, TTS=ai-magpie-tts-multilingual のみ（実測）。
+# key は env NVIDIA_API_KEY。WSL で未設定なら powershell.exe 経由で Windows の
+# ユーザー ENV（HKCU:\Environment）から読む。key を repo に置かない。
+set -euo pipefail
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SKILL_DIR="$(dirname "$SELF_DIR")"
+CONF="${NV_JA_CONF:-$SKILL_DIR/conf/nv-ja.env}"
+# shellcheck disable=SC1090
+set -a; [[ -f $CONF ]] && . "$CONF"; set +a
+
+usage() { sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+die() { printf 'nv-ja: %s\n' "$*" >&2; exit 1; }
+
+case "${1:-}" in ""|-h|--help|help) usage ;; esac
+
+# --- key: env → Windows ユーザー ENV（WSL の env は起動時のコピーなので registry を見る）
+KEY_VAR="${NV_KEY_ENV:-NVIDIA_API_KEY}"
+NV_KEY="${!KEY_VAR:-}"
+if [[ -z $NV_KEY ]] && command -v powershell.exe >/dev/null 2>&1; then
+  NV_KEY=$(powershell.exe -NoProfile -Command "
+    \$v = \$env:$KEY_VAR
+    if (-not \$v) { \$v = (Get-ItemProperty -Path 'HKCU:\Environment' -Name '$KEY_VAR' -ErrorAction SilentlyContinue).'$KEY_VAR' }
+    if (\$v) { [Console]::Out.Write(\$v) }
+  " 2>/dev/null </dev/null | tr -d '\r\n' || true)
+fi
+[[ -n $NV_KEY ]] || die "$KEY_VAR 未設定（build.nvidia.com の key を env か Windows ユーザー ENV に）"
+export NV_KEY
+
+# --- venv（nvidia-riva-client）。初回のみ構築。
+VENV="${NV_VENV:-$SKILL_DIR/.venv}"
+if [[ ! -x $VENV/bin/python ]]; then
+  printf 'nv-ja: %s を作成（nvidia-riva-client を install）\n' "$VENV" >&2
+  python3 -m venv "$VENV" || die "venv 作成失敗: $VENV"
+  "$VENV/bin/pip" install -q -U nvidia-riva-client || die "nvidia-riva-client の install 失敗"
+fi
+
+exec "$VENV/bin/python" "$SELF_DIR/nv_ja.py" "$@"
